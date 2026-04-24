@@ -13,15 +13,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 app.config.update(
-    SECRET_KEY='exchange-secret-key-change-in-prod',
-    JWT_SECRET_KEY='exchange-jwt-secret-change-in-prod',
-    SQLALCHEMY_DATABASE_URI=f"sqlite:///{os.path.join(BASE_DIR, 'exchange.db')}",
+    SECRET_KEY=os.environ.get('SECRET_KEY', 'exchange-secret-key-change-in-prod'),
+    JWT_SECRET_KEY=os.environ.get('JWT_SECRET_KEY', 'exchange-jwt-secret-change-in-prod'),
+    SQLALCHEMY_DATABASE_URI=os.environ.get('DATABASE_URL', f"sqlite:///{os.path.join(BASE_DIR, 'exchange.db')}"),
     SQLALCHEMY_TRACK_MODIFICATIONS=False,
     UPLOAD_FOLDER=os.path.join(BASE_DIR, 'uploads'),
-    MAX_CONTENT_LENGTH=100 * 1024 * 1024,  # 100 MB (supports videos)
+    MAX_CONTENT_LENGTH=100 * 1024 * 1024,
 )
 
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": "*"}})
 db.init_app(app)
 bcrypt.init_app(app)
 JWTManager(app)
