@@ -6,4 +6,9 @@ Flask-SQLAlchemy==3.1.1
 SQLAlchemy==2.0.49
 Werkzeug==3.1.8
 PyJWT==2.12.1
-gunicorn==21.2.0
+gunicorn==23.0.0
+flask-socketio==5.6.1
+flask-limiter==3.11.0
+redis==7.0.1
+fakeredis==2.35.1
+eventlet==0.40.4

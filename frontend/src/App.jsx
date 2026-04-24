@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   Search, ArrowRightLeft, TrendingUp, Activity, Bell, CheckCircle2,
   Star, ChevronDown, SlidersHorizontal, Plus, LogOut, X, Upload,
@@ -6,6 +6,7 @@ import {
   ChevronRight, Video, ShoppingCart, ChevronLeft, Filter
 } from 'lucide-react';
 import { auth as authApi, items as itemsApi, trades as tradesApi, profile as profileApi } from './api';
+import { io } from 'socket.io-client';
 
 /* ─── Helpers ────────────────────────────────────────────────── */
 const formatINR = (n) =>
@@ -1084,6 +1085,7 @@ export default function App() {
   const [pendingCount, setPendingCount] = useState(0);
   const [viewProfile, setViewProfile] = useState(null);
   const [showWallet, setShowWallet] = useState(false);
+  const socketRef = useRef(null);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -1101,28 +1103,38 @@ export default function App() {
     itemsApi.list().then(setMyItems).catch(console.error);
   }, [user, selectedCategory]);
 
-  useEffect(() => { if (user) loadMarket(); }, [loadMarket]);
-
-  useEffect(() => {
-    if (!user) return;
-    const id = setInterval(loadMarket, 30000);
-    return () => clearInterval(id);
-  }, [loadMarket]);
-
-  useEffect(() => {
-    if (!user) return;
-    const check = () => tradesApi.list()
+  const refreshPendingCount = useCallback(() => {
+    tradesApi.list()
       .then(d => setPendingCount(d.received.filter(t => t.status === 'pending').length))
       .catch(() => {});
-    check();
-    const id = setInterval(check, 15000);
-    return () => clearInterval(id);
-  }, [user]);
+  }, []);
+
+  // Initial load
+  useEffect(() => { if (user) { loadMarket(); refreshPendingCount(); } }, [loadMarket, refreshPendingCount]);
+
+  // WebSocket — replaces all polling
+  useEffect(() => {
+    if (!user) return;
+    const token = localStorage.getItem('token');
+    const BACKEND = import.meta.env.VITE_API_URL || '';
+    const socket = io(BACKEND, { auth: { token }, transports: ['websocket', 'polling'] });
+    socketRef.current = socket;
+
+    socket.on('marketplace_update', () => loadMarket());
+    socket.on('trade_update', () => refreshPendingCount());
+
+    return () => { socket.disconnect(); socketRef.current = null; };
+  }, [user, loadMarket, refreshPendingCount]);
 
   // Reset page when filters change
   useEffect(() => { setPage(1); }, [selectedCategory, search, priceMin, priceMax]);
 
-  const logout = () => { localStorage.removeItem('token'); setUser(null); setMarketItems([]); setMyItems([]); };
+  const logout = async () => {
+    try { await authApi.logout(); } catch (_) {}
+    if (socketRef.current) { socketRef.current.disconnect(); socketRef.current = null; }
+    localStorage.removeItem('token');
+    setUser(null); setMarketItems([]); setMyItems([]);
+  };
   const updateUserWallet = (bal) => setUser(u => ({ ...u, wallet_balance: bal }));
 
   const filteredItems = useMemo(() => {

@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, Item, TradeRequest, Rating, User
 from services.matching import find_matches
+from extensions import socketio
 from datetime import datetime
 
 trades_bp = Blueprint('trades', __name__)
@@ -64,6 +65,11 @@ def create_trade():
     db.session.commit()
     result = trade.to_dict()
     result['value_diff'] = value_diff
+
+    # Notify target user of the new trade request
+    socketio.emit('trade_update', {'action': 'created', 'trade_id': trade.id},
+                  room=tgt_item.user_id)
+
     return jsonify(result), 201
 
 
@@ -143,6 +149,12 @@ def respond_trade(trade_id):
         trade.status = 'rejected'
 
     db.session.commit()
+
+    # Notify both parties of the status change
+    payload = {'action': 'responded', 'trade_id': trade.id, 'status': trade.status}
+    socketio.emit('trade_update', payload, room=trade.requester_id)
+    socketio.emit('trade_update', payload, room=trade.target_user_id)
+
     return jsonify(trade.to_dict())
 
 
@@ -168,6 +180,11 @@ def confirm_trade(trade_id):
         trade.completed_at = datetime.utcnow()
 
     db.session.commit()
+
+    payload = {'action': 'confirmed', 'trade_id': trade.id, 'status': trade.status}
+    socketio.emit('trade_update', payload, room=trade.requester_id)
+    socketio.emit('trade_update', payload, room=trade.target_user_id)
+
     d = trade.to_dict()
     d['my_confirmed'] = True
     return jsonify(d)
@@ -204,4 +221,8 @@ def rate_trade(trade_id):
     )
     db.session.add(r)
     db.session.commit()
+
+    # Notify the person who was rated
+    socketio.emit('trade_update', {'action': 'rated', 'trade_id': trade_id}, room=ratee_id)
+
     return jsonify({'success': True, 'rating': rating_val})

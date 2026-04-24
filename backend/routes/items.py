@@ -3,13 +3,23 @@ from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, Item, User
 from werkzeug.utils import secure_filename
+from redis_client import r
+from extensions import socketio
 
 items_bp = Blueprint('items', __name__)
 
 ALLOWED_MEDIA = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'avi', 'webm', 'mkv'}
+MARKET_CACHE_TTL = 60  # seconds
+
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_MEDIA
+
+
+def _invalidate_market_cache():
+    keys = list(r.scan_iter('market:*'))
+    if keys:
+        r.delete(*keys)
 
 
 @items_bp.route('', methods=['GET'])
@@ -24,13 +34,22 @@ def list_items():
 @jwt_required()
 def marketplace():
     current_user_id = get_jwt_identity()
-    category = request.args.get('category')
+    category = request.args.get('category', '')
+
+    cache_key = f'market:{current_user_id}:{category}'
+    cached = r.get(cache_key)
+    if cached:
+        return jsonify(json.loads(cached))
+
     q = Item.query.filter(Item.status == 'available', Item.user_id != current_user_id)
     if category:
         q = q.filter(Item.category == category)
     items = q.limit(200).all()
+
     from services.matching import score_marketplace_items
     result = score_marketplace_items(current_user_id, items)
+
+    r.setex(cache_key, MARKET_CACHE_TTL, json.dumps(result))
     return jsonify(result)
 
 
@@ -53,7 +72,6 @@ def create_item():
         upload_dir = current_app.config['UPLOAD_FOLDER']
         os.makedirs(upload_dir, exist_ok=True)
 
-        # Accept up to 5 media files via 'media' key
         files = request.files.getlist('media')
         for f in files[:5]:
             if f and f.filename and allowed_file(f.filename):
@@ -62,7 +80,6 @@ def create_item():
                 f.save(os.path.join(upload_dir, fname))
                 media_urls.append(f"/uploads/{fname}")
 
-        # Backward compat: single 'image' field
         if not media_urls:
             file = request.files.get('image')
             if file and file.filename and allowed_file(file.filename):
@@ -101,6 +118,10 @@ def create_item():
     )
     db.session.add(item)
     db.session.commit()
+
+    _invalidate_market_cache()
+    socketio.emit('marketplace_update', {'action': 'add', 'item_id': item.id})
+
     return jsonify(item.to_dict()), 201
 
 
@@ -118,6 +139,10 @@ def update_item(item_id):
         if field in data:
             setattr(item, field, data[field])
     db.session.commit()
+
+    _invalidate_market_cache()
+    socketio.emit('marketplace_update', {'action': 'update', 'item_id': item_id})
+
     return jsonify(item.to_dict())
 
 
@@ -130,4 +155,8 @@ def delete_item(item_id):
         return jsonify({'error': 'Forbidden'}), 403
     db.session.delete(item)
     db.session.commit()
+
+    _invalidate_market_cache()
+    socketio.emit('marketplace_update', {'action': 'remove', 'item_id': item_id})
+
     return jsonify({'success': True})
