@@ -1,3 +1,4 @@
+import json
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, Item, TradeRequest, Rating, User
@@ -26,6 +27,8 @@ def create_trade():
     requester_item_id = data.get('requester_item_id')
     target_item_id = data.get('target_item_id')
     message = data.get('message', '')
+    wallet_payment = float(data.get('wallet_payment', 0))
+    extra_item_ids = data.get('extra_item_ids', [])
 
     if not requester_item_id or not target_item_id:
         return jsonify({'error': 'requester_item_id and target_item_id required'}), 400
@@ -40,16 +43,31 @@ def create_trade():
     if tgt_item.user_id == current_user_id:
         return jsonify({'error': 'Cannot trade with yourself'}), 400
 
+    # Deduct wallet payment from requester upfront (held until accept/reject)
+    requester_user = User.query.get(current_user_id)
+    if wallet_payment > 0:
+        if (requester_user.wallet_balance or 0) < wallet_payment:
+            return jsonify({'error': 'Insufficient wallet balance'}), 400
+        requester_user.wallet_balance = (requester_user.wallet_balance or 0) - wallet_payment
+
+    # Validate extra items (must belong to requester, be available, not the main item)
+    valid_extra_ids = []
+    for eid in extra_item_ids[:3]:
+        ei = Item.query.get(eid)
+        if ei and ei.user_id == current_user_id and ei.status == 'available' and eid != requester_item_id:
+            valid_extra_ids.append(eid)
+
     from services.matching import compute_match_score
     avg = db.session.query(db.func.avg(Rating.rating)).filter_by(ratee_id=current_user_id).scalar()
     rep = float(avg) if avg else 0.0
-    requester_user = User.query.get(current_user_id)
     target_owner = User.query.get(tgt_item.user_id)
     user_loc = requester_user.location if requester_user else ''
     cand_loc = target_owner.location if target_owner else ''
     score = compute_match_score(req_item, tgt_item, rep, user_loc, cand_loc)
 
-    req_val = req_item.value_estimate or 0
+    req_val = (req_item.value_estimate or 0) + wallet_payment + sum(
+        (Item.query.get(eid).value_estimate or 0) for eid in valid_extra_ids if Item.query.get(eid)
+    )
     tgt_val = tgt_item.value_estimate or 0
     value_diff = tgt_val - req_val
 
@@ -59,14 +77,15 @@ def create_trade():
         target_item_id=target_item_id,
         target_user_id=tgt_item.user_id,
         match_score=score,
-        message=message
+        message=message,
+        requester_wallet_payment=wallet_payment,
+        requester_extra_item_ids=json.dumps(valid_extra_ids),
     )
     db.session.add(trade)
     db.session.commit()
     result = trade.to_dict()
     result['value_diff'] = value_diff
 
-    # Notify target user of the new trade request
     socketio.emit('trade_update', {'action': 'created', 'trade_id': trade.id},
                   room=tgt_item.user_id)
 
@@ -114,17 +133,12 @@ def respond_trade(trade_id):
 
     if action == 'accept':
         meetup_location = (data.get('meetup_location') or '').strip()
-        wallet_payment = float(data.get('wallet_payment', 0))
 
-        if wallet_payment > 0:
+        # Credit requester's pre-paid wallet balance to target
+        if (trade.requester_wallet_payment or 0) > 0:
             target_user = User.query.get(current_user_id)
-            if not target_user or (target_user.wallet_balance or 0) < wallet_payment:
-                return jsonify({'error': 'Insufficient wallet balance'}), 400
-            requester_user = User.query.get(trade.requester_id)
-            target_user.wallet_balance = (target_user.wallet_balance or 0) - wallet_payment
-            if requester_user:
-                requester_user.wallet_balance = (requester_user.wallet_balance or 0) + wallet_payment
-            trade.wallet_adjustment = wallet_payment
+            if target_user:
+                target_user.wallet_balance = (target_user.wallet_balance or 0) + trade.requester_wallet_payment
 
         trade.status = 'accepted'
         trade.meetup_location = meetup_location
@@ -137,6 +151,12 @@ def respond_trade(trade_id):
         if tgt_item:
             tgt_item.status = 'traded'
 
+        # Mark extra items as traded too
+        for eid in json.loads(trade.requester_extra_item_ids or '[]'):
+            ei = Item.query.get(eid)
+            if ei:
+                ei.status = 'traded'
+
         TradeRequest.query.filter(
             TradeRequest.id != trade_id,
             TradeRequest.status == 'pending',
@@ -147,6 +167,11 @@ def respond_trade(trade_id):
         ).update({'status': 'cancelled'}, synchronize_session=False)
     else:
         trade.status = 'rejected'
+        # Refund requester's wallet payment if they pre-paid
+        if (trade.requester_wallet_payment or 0) > 0:
+            req_user = User.query.get(trade.requester_id)
+            if req_user:
+                req_user.wallet_balance = (req_user.wallet_balance or 0) + trade.requester_wallet_payment
 
     db.session.commit()
 

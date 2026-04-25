@@ -130,6 +130,8 @@ def run_migrations():
             ('wallet_adjustment', 'REAL DEFAULT 0.0'),
             ('requester_confirmed', 'INTEGER DEFAULT 0'),
             ('target_confirmed', 'INTEGER DEFAULT 0'),
+            ('requester_wallet_payment', 'REAL DEFAULT 0.0'),
+            ('requester_extra_item_ids', "TEXT DEFAULT '[]'"),
             ('accepted_at', 'TEXT'),
             ('completed_at', 'TEXT'),
         ]:

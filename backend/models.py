@@ -116,9 +116,23 @@ class TradeRequest(db.Model):
     wallet_adjustment = db.Column(db.Float, default=0.0)
     requester_confirmed = db.Column(db.Boolean, default=False)
     target_confirmed = db.Column(db.Boolean, default=False)
+    requester_wallet_payment = db.Column(db.Float, default=0.0)
+    requester_extra_item_ids = db.Column(db.Text, default='[]')
     accepted_at = db.Column(db.DateTime, nullable=True)
     completed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def _extra_items(self):
+        try:
+            ids = json.loads(self.requester_extra_item_ids or '[]')
+        except Exception:
+            ids = []
+        result = []
+        for iid in ids:
+            it = Item.query.get(iid)
+            if it:
+                result.append(it.to_dict())
+        return result
 
     requester = db.relationship('User', foreign_keys=[requester_id])
     target_user = db.relationship('User', foreign_keys=[target_user_id])
@@ -140,6 +154,8 @@ class TradeRequest(db.Model):
             'wallet_adjustment': self.wallet_adjustment or 0.0,
             'requester_confirmed': bool(self.requester_confirmed),
             'target_confirmed': bool(self.target_confirmed),
+            'requester_wallet_payment': self.requester_wallet_payment or 0.0,
+            'requester_extra_items': self._extra_items(),
             'accepted_at': self.accepted_at.isoformat() if self.accepted_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'created_at': self.created_at.isoformat()

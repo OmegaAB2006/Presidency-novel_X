@@ -290,8 +290,11 @@ function AddItemModal({ onClose, onAdded }) {
 }
 
 /* ─── Trade Modal ────────────────────────────────────────────── */
-function TradeModal({ targetItem, myItems, onClose, onSent }) {
+function TradeModal({ targetItem, myItems, onClose, onSent, currentUser }) {
   const [selectedItemId, setSelectedItemId] = useState('');
+  const [balanceTab, setBalanceTab] = useState('wallet'); // 'wallet' | 'items'
+  const [walletAmount, setWalletAmount] = useState(0);
+  const [extraIds, setExtraIds] = useState([]);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -299,15 +302,34 @@ function TradeModal({ targetItem, myItems, onClose, onSent }) {
 
   const available = myItems.filter(i => i.status === 'available');
   const selectedItem = available.find(i => i.id === selectedItemId);
-  const valueDiff = selectedItem
-    ? Math.abs((targetItem.value_estimate || 0) - (selectedItem.value_estimate || 0)) : 0;
-  const bigGap = valueDiff > Math.max(500, (targetItem.value_estimate || 0) * 0.2);
+  const tgtVal = targetItem.value_estimate || 0;
+  const myVal = selectedItem ? (selectedItem.value_estimate || 0) : 0;
+  const extraItemsVal = extraIds.reduce((sum, eid) => {
+    const it = available.find(i => i.id === eid);
+    return sum + (it ? (it.value_estimate || 0) : 0);
+  }, 0);
+  const totalOffer = myVal + walletAmount + extraItemsVal;
+  const gap = tgtVal - myVal; // positive = requester needs to add more
+  const remainingGap = tgtVal - totalOffer;
+  const showBalancer = selectedItem && gap > Math.max(500, tgtVal * 0.1);
+  const walletBalance = currentUser?.wallet_balance || 0;
+
+  const toggleExtra = (id) => {
+    setExtraIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev.slice(0, 2), id]);
+  };
 
   const send = async () => {
     if (!selectedItemId) { setError('Select an item to offer'); return; }
+    if (walletAmount > walletBalance) { setError('Wallet amount exceeds your balance'); return; }
     setLoading(true); setError('');
     try {
-      await tradesApi.create({ requester_item_id: selectedItemId, target_item_id: targetItem.id, message });
+      await tradesApi.create({
+        requester_item_id: selectedItemId,
+        target_item_id: targetItem.id,
+        message,
+        wallet_payment: walletAmount,
+        extra_item_ids: extraIds,
+      });
       setDone(true);
       onSent && onSent();
     } catch (err) { setError(err.message); }
@@ -330,7 +352,7 @@ function TradeModal({ targetItem, myItems, onClose, onSent }) {
             <button onClick={onClose} className="bg-cyan-500 hover:bg-cyan-400 text-black font-black px-8 py-3 rounded-xl">Done</button>
           </div>
         ) : (
-          <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
+          <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
             {/* Target item */}
             <div className="flex items-center gap-3 bg-white/5 rounded-2xl p-3 border border-white/5">
               <div className="w-14 h-14 rounded-xl overflow-hidden bg-slate-800 flex-shrink-0 flex items-center justify-center">
@@ -341,24 +363,19 @@ function TradeModal({ targetItem, myItems, onClose, onSent }) {
               <div className="flex-1 min-w-0">
                 <p className="text-white font-bold truncate">{targetItem.name}</p>
                 <p className="text-slate-500 text-xs">{targetItem.category} · {CONDITION_LABEL[targetItem.condition] || targetItem.condition}</p>
-                <p className="text-emerald-400 text-sm font-black">{formatINR(targetItem.value_estimate)}</p>
+                <p className="text-emerald-400 text-sm font-black">{formatINR(tgtVal)}</p>
               </div>
             </div>
 
-            {/* Owner info */}
             {targetItem.owner && (
               <div className="flex items-center gap-2 text-xs text-slate-500 bg-white/[0.02] rounded-xl px-3 py-2 border border-white/5">
                 <UserIcon size={11} />
                 <span className="font-bold text-slate-300">{targetItem.owner.username}</span>
-                {targetItem.owner.reputation > 0 && <>
-                  <StarRating value={targetItem.owner.reputation} size={10} />
-                  <span className="text-yellow-400 font-bold">{targetItem.owner.reputation.toFixed(1)}</span>
-                </>}
+                {targetItem.owner.reputation > 0 && <><StarRating value={targetItem.owner.reputation} size={10} /><span className="text-yellow-400 font-bold">{targetItem.owner.reputation.toFixed(1)}</span></>}
                 {targetItem.owner.location && <><MapPin size={10} /><span>{targetItem.owner.location}</span></>}
               </div>
             )}
 
-            {/* Item wanted by target */}
             {(targetItem.wanted_category || targetItem.wanted_description) && (
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-3 py-2 text-xs text-blue-300">
                 🎯 They want: <strong>{targetItem.wanted_category}</strong>
@@ -366,12 +383,12 @@ function TradeModal({ targetItem, myItems, onClose, onSent }) {
               </div>
             )}
 
-            {/* Item selector */}
+            {/* Main item selector */}
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Your offer</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Your main item</label>
               {available.length === 0
                 ? <p className="text-slate-500 text-sm bg-white/5 rounded-xl p-3 border border-white/5">No available items. Add items first.</p>
-                : <select value={selectedItemId} onChange={e => setSelectedItemId(e.target.value)}
+                : <select value={selectedItemId} onChange={e => { setSelectedItemId(e.target.value); setWalletAmount(0); setExtraIds([]); }}
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-cyan-500/50">
                     <option value="">Select item to offer…</option>
                     {available.map(i => <option key={i.id} value={i.id}>{i.name} — {formatINR(i.value_estimate)}</option>)}
@@ -379,10 +396,78 @@ function TradeModal({ targetItem, myItems, onClose, onSent }) {
               }
             </div>
 
-            {/* Value gap notice (info only — target decides on acceptance) */}
-            {selectedItem && bigGap && (
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 text-xs text-amber-400">
-                ⚠️ Value gap of {formatINR(valueDiff)} detected. The other party will be notified when reviewing this trade.
+            {/* Value gap balancer */}
+            {showBalancer && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-amber-400 text-sm font-bold">⚖️ Value gap: {formatINR(gap)}</p>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${remainingGap <= 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                    {remainingGap <= 0 ? '✓ Balanced' : `${formatINR(remainingGap)} short`}
+                  </span>
+                </div>
+                <p className="text-slate-400 text-xs">Your item is worth {formatINR(gap)} less. Balance the offer so the other party is more likely to accept.</p>
+
+                {/* Tabs */}
+                <div className="flex border border-white/10 rounded-xl overflow-hidden">
+                  {[['wallet', '💳 Add Wallet Funds'], ['items', '📦 Add More Items']].map(([tab, label]) => (
+                    <button key={tab} onClick={() => setBalanceTab(tab)}
+                      className={`flex-1 py-2 text-xs font-bold transition-colors ${balanceTab === tab ? 'bg-amber-500/20 text-amber-300' : 'text-slate-500 hover:text-slate-300'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {balanceTab === 'wallet' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>Amount to add</span>
+                      <span>Balance: {formatINR(walletBalance)}</span>
+                    </div>
+                    <input
+                      type="number" min={0} max={Math.min(gap, walletBalance)} step={100}
+                      value={walletAmount || ''}
+                      onChange={e => setWalletAmount(Math.min(parseFloat(e.target.value) || 0, Math.min(gap, walletBalance)))}
+                      placeholder={`0 – ${formatINR(Math.min(gap, walletBalance))}`}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 outline-none focus:border-amber-500/50"
+                    />
+                    <input type="range" min={0} max={Math.min(gap, walletBalance)} step={100}
+                      value={walletAmount}
+                      onChange={e => setWalletAmount(parseFloat(e.target.value))}
+                      className="w-full accent-amber-500" />
+                    {walletAmount > 0 && <p className="text-amber-400 text-xs">₹{walletAmount.toLocaleString('en-IN')} will be deducted from your wallet now and credited to them on acceptance.</p>}
+                  </div>
+                )}
+
+                {balanceTab === 'items' && (
+                  <div className="space-y-2 max-h-36 overflow-y-auto">
+                    {available.filter(i => i.id !== selectedItemId).length === 0
+                      ? <p className="text-slate-600 text-xs">No other available items to add.</p>
+                      : available.filter(i => i.id !== selectedItemId).map(i => (
+                        <label key={i.id} className="flex items-center gap-3 cursor-pointer bg-white/[0.03] rounded-xl px-3 py-2 border border-white/5 hover:border-amber-500/30">
+                          <input type="checkbox" checked={extraIds.includes(i.id)} onChange={() => toggleExtra(i.id)}
+                            className="w-4 h-4 accent-amber-500 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white text-xs font-bold truncate">{i.name}</p>
+                            <p className="text-slate-500 text-[10px]">{i.category} · {CONDITION_LABEL[i.condition] || i.condition}</p>
+                          </div>
+                          <span className="text-emerald-400 text-xs font-bold flex-shrink-0">{formatINR(i.value_estimate)}</span>
+                        </label>
+                      ))
+                    }
+                    {extraIds.length === 3 && <p className="text-slate-500 text-xs text-center">Max 3 extra items</p>}
+                  </div>
+                )}
+
+                {/* Offer summary */}
+                <div className="bg-white/5 rounded-xl px-3 py-2 text-xs space-y-1 border border-white/5">
+                  <div className="flex justify-between text-slate-400"><span>Main item</span><span className="text-white">{formatINR(myVal)}</span></div>
+                  {walletAmount > 0 && <div className="flex justify-between text-slate-400"><span>Wallet</span><span className="text-amber-400">+{formatINR(walletAmount)}</span></div>}
+                  {extraItemsVal > 0 && <div className="flex justify-between text-slate-400"><span>Extra items ({extraIds.length})</span><span className="text-amber-400">+{formatINR(extraItemsVal)}</span></div>}
+                  <div className="flex justify-between font-bold border-t border-white/10 pt-1 mt-1">
+                    <span className="text-white">Total offer</span>
+                    <span className={remainingGap <= 0 ? 'text-emerald-400' : 'text-amber-400'}>{formatINR(totalOffer)}</span>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -410,17 +495,19 @@ function AcceptTradeModal({ trade, onClose, onAccepted }) {
   const [meetup, setMeetup] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [walletOpt, setWalletOpt] = useState(false);
 
   const reqVal = trade.requester_item?.value_estimate || 0;
   const tgtVal = trade.target_item?.value_estimate || 0;
-  const gap = tgtVal - reqVal;
-  const showGap = Math.abs(gap) > Math.max(500, tgtVal * 0.15);
+  const walletPaid = trade.requester_wallet_payment || 0;
+  const extraItems = trade.requester_extra_items || [];
+  const extraVal = extraItems.reduce((s, i) => s + (i.value_estimate || 0), 0);
+  const totalOffer = reqVal + walletPaid + extraVal;
+  const remainingGap = tgtVal - totalOffer;
 
   const accept = async () => {
     setLoading(true); setError('');
     try {
-      await tradesApi.respond(trade.id, 'accept', meetup, walletOpt && gap > 0 ? gap : 0);
+      await tradesApi.respond(trade.id, 'accept', meetup, 0);
       onAccepted();
       onClose();
     } catch (err) { setError(err.message); }
@@ -431,55 +518,96 @@ function AcceptTradeModal({ trade, onClose, onAccepted }) {
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="w-full max-w-md bg-[#0d1117] border border-white/10 rounded-3xl overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-white/5">
-          <h2 className="text-white font-black text-lg">✅ Accept Trade</h2>
+          <h2 className="text-white font-black text-lg">✅ Review Trade Offer</h2>
           <button onClick={onClose} className="text-slate-500 hover:text-white bg-white/5 p-2 rounded-xl"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4">
-          <div className="flex items-center gap-2 text-sm text-slate-400 bg-white/5 rounded-2xl p-3 border border-white/5">
-            <div className="text-center">
-              <p className="text-white font-bold text-xs">{trade.requester_item?.name}</p>
-              <p className="text-cyan-400 text-xs">{formatINR(reqVal)}</p>
+          {/* What they're offering vs what you give */}
+          <div className="bg-white/5 rounded-2xl p-4 border border-white/5 space-y-3">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Their offer to you</p>
+            <div className="flex items-center gap-2">
+              <div className="w-10 h-10 rounded-lg overflow-hidden bg-slate-800 flex-shrink-0 flex items-center justify-center">
+                {trade.requester_item?.image_url
+                  ? <img src={trade.requester_item.image_url} alt="" className="w-full h-full object-cover" />
+                  : <Package size={16} className="text-slate-600" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-white text-sm font-bold truncate">{trade.requester_item?.name}</p>
+                <p className="text-emerald-400 text-xs font-bold">{formatINR(reqVal)}</p>
+              </div>
             </div>
-            <ArrowRightLeft size={14} className="text-cyan-400 flex-shrink-0 mx-2" />
-            <div className="text-center">
-              <p className="text-white font-bold text-xs">{trade.target_item?.name}</p>
-              <p className="text-cyan-400 text-xs">{formatINR(tgtVal)}</p>
+
+            {walletPaid > 0 && (
+              <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
+                <Wallet size={13} className="text-amber-400 flex-shrink-0" />
+                <p className="text-amber-400 text-xs font-bold">+ {formatINR(walletPaid)} wallet top-up</p>
+              </div>
+            )}
+
+            {extraItems.map(ei => (
+              <div key={ei.id} className="flex items-center gap-2 bg-white/[0.03] rounded-xl px-3 py-2 border border-white/5">
+                <div className="w-8 h-8 rounded-lg overflow-hidden bg-slate-800 flex-shrink-0 flex items-center justify-center">
+                  {ei.image_url ? <img src={ei.image_url} alt="" className="w-full h-full object-cover" /> : <Package size={12} className="text-slate-600" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-xs font-bold truncate">+ {ei.name}</p>
+                  <p className="text-emerald-400 text-[10px]">{formatINR(ei.value_estimate)}</p>
+                </div>
+              </div>
+            ))}
+
+            <div className="flex justify-between text-sm border-t border-white/10 pt-2">
+              <span className="text-slate-400 font-bold">Total offer value</span>
+              <span className="text-white font-black">{formatINR(totalOffer)}</span>
             </div>
           </div>
 
-          {/* Value mismatch prompt */}
-          {showGap && (
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 space-y-3">
-              <p className="text-amber-400 text-sm font-bold">
-                ⚠️ Trade amount not matched — gap of {formatINR(Math.abs(gap))}
-              </p>
-              {gap > 0 && (
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input type="checkbox" checked={walletOpt} onChange={e => setWalletOpt(e.target.checked)}
-                    className="w-4 h-4 accent-cyan-500 mt-0.5 flex-shrink-0" />
-                  <span className="text-slate-300 text-sm">
-                    Add <strong className="text-cyan-400">{formatINR(gap)}</strong> from my wallet to balance this trade
-                    <span className="text-slate-500 text-xs block mt-0.5">This will be credited to the requester.</span>
-                  </span>
-                </label>
-              )}
-              {!walletOpt && <p className="text-slate-600 text-xs">You can accept as-is or tick above to balance it.</p>}
+          {/* What you give */}
+          <div className="flex items-center gap-3 bg-white/5 rounded-2xl p-3 border border-white/5">
+            <div className="w-10 h-10 rounded-lg overflow-hidden bg-slate-800 flex-shrink-0 flex items-center justify-center">
+              {trade.target_item?.image_url
+                ? <img src={trade.target_item.image_url} alt="" className="w-full h-full object-cover" />
+                : <Package size={16} className="text-slate-600" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">You give</p>
+              <p className="text-white text-sm font-bold truncate">{trade.target_item?.name}</p>
+              <p className="text-emerald-400 text-xs font-bold">{formatINR(tgtVal)}</p>
+            </div>
+          </div>
+
+          {/* Remaining gap notice */}
+          {Math.abs(remainingGap) > 200 && (
+            <div className={`rounded-xl px-3 py-2 text-xs border ${remainingGap > 0 ? 'bg-amber-500/10 border-amber-500/20 text-amber-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'}`}>
+              {remainingGap > 0
+                ? `⚠️ Their offer is still ${formatINR(remainingGap)} short — you can accept as-is or decline.`
+                : `✓ Their offer exceeds your item's value by ${formatINR(-remainingGap)}.`}
+            </div>
+          )}
+
+          {trade.message && (
+            <div className="bg-white/[0.03] rounded-xl px-3 py-2 border border-white/5">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Message</p>
+              <p className="text-slate-300 text-sm">{trade.message}</p>
             </div>
           )}
 
           <div>
             <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Meetup Location <span className="text-slate-700">(optional)</span></label>
             <input value={meetup} onChange={e => setMeetup(e.target.value)}
-              placeholder="Google Maps link or meetup spot description…"
+              placeholder="Google Maps link or meetup spot…"
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-slate-600 outline-none focus:border-cyan-500/50" />
           </div>
 
           {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2">{error}</p>}
           <div className="flex gap-3">
-            <button onClick={onClose} className="flex-1 bg-white/5 hover:bg-white/10 text-white font-bold py-3 rounded-xl">Cancel</button>
+            <button onClick={() => { tradesApi.respond(trade.id, 'reject').then(() => { onAccepted(); onClose(); }).catch(e => setError(e.message)); }}
+              className="flex-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-bold py-3 rounded-xl border border-red-500/20">
+              Decline
+            </button>
             <button onClick={accept} disabled={loading}
               className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-black py-3 rounded-xl transition-all disabled:opacity-50">
-              {loading ? 'Accepting…' : '✓ Confirm Accept'}
+              {loading ? 'Accepting…' : '✓ Accept'}
             </button>
           </div>
         </div>
@@ -1443,7 +1571,7 @@ export default function App() {
       {panel === 'inventory' && <InventoryDrawer user={user} onClose={() => setPanel(null)} onRefreshMarket={loadMarket} />}
       {panel === 'trades' && <TradesPanel currentUser={user} onClose={() => setPanel(null)} onTradeUpdate={loadMarket} />}
       {panel === 'cart' && <CartDrawer currentUser={user} onClose={() => setPanel(null)} onTradeUpdate={loadMarket} />}
-      {tradeTarget && <TradeModal targetItem={tradeTarget} myItems={myItems} onClose={() => setTradeTarget(null)} onSent={loadMarket} />}
+      {tradeTarget && <TradeModal targetItem={tradeTarget} myItems={myItems} currentUser={user} onClose={() => setTradeTarget(null)} onSent={loadMarket} />}
       {viewProfile && <ProfileDrawer userId={viewProfile} onClose={() => setViewProfile(null)} />}
       {showWallet && <WalletModal user={user} onClose={() => setShowWallet(false)} onUpdated={updateUserWallet} />}
     </div>
